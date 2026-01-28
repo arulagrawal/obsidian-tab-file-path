@@ -17,6 +17,9 @@ const DEFAULT_SETTINGS: TabFilePathSettings = {
 
 export default class TabFilePathPlugin extends Plugin {
     settings: TabFilePathSettings;
+    private tabTitleObserver: MutationObserver | null = null;
+    private titleElementToLeaf = new WeakMap<HTMLElement, WorkspaceLeaf>();
+    private isApplyingTitle = false;
 
     async onload() {
         // const workspaceEvents = [
@@ -58,7 +61,12 @@ export default class TabFilePathPlugin extends Plugin {
         // debounce this callback as well.
         this.registerEvent(this.app.vault.on('rename', setTabTitlesDebounced));
 
+        this.startTabTitleObserver();
         this.setTabTitles();
+    }
+
+    onunload() {
+        this.stopTabTitleObserver();
     }
 
     setTabTitles() {
@@ -67,8 +75,7 @@ export default class TabFilePathPlugin extends Plugin {
         const leafInfos = leaves.map(leaf => {
             const path = this.getLeafName(leaf);
             const parts = path.split('/').filter(Boolean);
-            const fileName = parts[parts.length - 1] ?? '';
-            return { leaf, path, parts, fileName };
+            return { leaf, parts };
         });
 
         leafInfos.forEach((info) => {
@@ -95,9 +102,16 @@ export default class TabFilePathPlugin extends Plugin {
         //     leaf.view.titleEl
         //     leaf.view.titleContainerEl
         // }
-        leaf.tabHeaderEl.setAttribute('aria-label', title);
-        leaf.tabHeaderInnerTitleEl.innerText = title;
-        leaf.tabHeaderInnerTitleEl.classList.add('tab__title');
+        this.isApplyingTitle = true;
+        try {
+            const titleElement = leaf.tabHeaderInnerTitleEl;
+            this.titleElementToLeaf.set(titleElement, leaf);
+            leaf.tabHeaderEl.setAttribute('aria-label', title);
+            titleElement.innerText = title;
+            titleElement.classList.add('tab__title');
+        } finally {
+            this.isApplyingTitle = false;
+        }
     }
 
     getTruncatedPath(parts: string[]): string {
@@ -116,6 +130,75 @@ export default class TabFilePathPlugin extends Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    getLeafTitle(leaf: WorkspaceLeaf): string {
+        const path = this.getLeafName(leaf);
+        const parts = path.split('/').filter(Boolean);
+        return this.getTruncatedPath(parts);
+    }
+
+    startTabTitleObserver() {
+        if (this.tabTitleObserver) {
+            return;
+        }
+
+        this.tabTitleObserver = new MutationObserver((mutations) => {
+            if (this.isApplyingTitle) {
+                return;
+            }
+
+            for (const mutation of mutations) {
+                const titleElement = this.getTitleElementFromMutation(mutation);
+                if (!titleElement) {
+                    continue;
+                }
+
+                const leaf = this.titleElementToLeaf.get(titleElement);
+                if (!leaf) {
+                    continue;
+                }
+
+                const expectedTitle = this.getLeafTitle(leaf);
+                if (titleElement.innerText !== expectedTitle) {
+                    this.setLeafTitle(leaf, expectedTitle);
+                }
+            }
+        });
+
+        this.tabTitleObserver.observe(this.app.workspace.containerEl, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+        });
+    }
+
+    stopTabTitleObserver() {
+        if (this.tabTitleObserver) {
+            this.tabTitleObserver.disconnect();
+            this.tabTitleObserver = null;
+        }
+    }
+
+    getTitleElementFromMutation(mutation: MutationRecord): HTMLElement | null {
+        const target = mutation.target;
+        let element: HTMLElement | null = null;
+
+        if (target instanceof HTMLElement) {
+            element = target;
+        } else if (target instanceof Text) {
+            element = target.parentElement;
+        }
+
+        if (!element) {
+            return null;
+        }
+
+        if (element.classList.contains('tab__title')) {
+            return element;
+        }
+
+        return element.closest('.tab__title');
     }
 }
 
