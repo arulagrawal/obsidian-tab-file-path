@@ -1,10 +1,25 @@
 import {
+    App,
     debounce,
     Plugin,
+    PluginSettingTab,
+    Setting,
     WorkspaceLeaf,
 } from 'obsidian';
 
+interface TabFilePathSettings {
+    depth: number;
+    alwaysShowGlobs: string[];
+}
+
+const DEFAULT_SETTINGS: TabFilePathSettings = {
+    depth: 1,
+    alwaysShowGlobs: [],
+};
+
 export default class TabFilePathPlugin extends Plugin {
+    settings: TabFilePathSettings;
+
     async onload() {
         // const workspaceEvents = [
         //     'active-leaf',
@@ -28,6 +43,9 @@ export default class TabFilePathPlugin extends Plugin {
         //     this.registerEvent(this.app.workspace.on(event, () => console.log(`event: ${event}`)))
         // });
 
+        await this.loadSettings();
+        this.addSettingTab(new TabFilePathSettingTab(this.app, this));
+
         const setTabTitlesDebounced = debounce(this.setTabTitles.bind(this), 100);
 
         // Modifying leaf.tabHeaderInnerTitleEl in response to a 'file-open'
@@ -48,21 +66,29 @@ export default class TabFilePathPlugin extends Plugin {
     setTabTitles() {
         const leaves = this.app.workspace.getLeavesOfType('markdown');
 
-        const leafFileNames = leaves.map(leaf => {
+        const leafInfos = leaves.map(leaf => {
             const path = this.getLeafName(leaf);
             const parts = path.split('/').filter(Boolean);
-            return parts[parts.length - 1] ?? '';
+            const fileName = parts[parts.length - 1] ?? '';
+            return { leaf, path, parts, fileName };
         });
 
         const fileNameCounts: Record<string, number> = {};
-        for (const name of leafFileNames) {
+        for (const info of leafInfos) {
+            const name = info.fileName;
             fileNameCounts[name] = (fileNameCounts[name] ?? 0) + 1;
         }
 
-        leaves.forEach((leaf, ii) => {
-            if (fileNameCounts[leafFileNames[ii]] > 1) {
-                this.setLeafTitle(leaf, this.getLeafName(leaf));
-            }
+        leafInfos.forEach((info) => {
+            const shouldShowPath =
+                fileNameCounts[info.fileName] > 1 ||
+                this.matchesAlwaysShowGlobs(info.fileName);
+
+            const title = shouldShowPath
+                ? this.getTruncatedPath(info.parts)
+                : info.fileName;
+
+            this.setLeafTitle(info.leaf, title);
         });
     }
 
@@ -88,5 +114,91 @@ export default class TabFilePathPlugin extends Plugin {
         leaf.tabHeaderEl.setAttribute('aria-label', title);
         leaf.tabHeaderInnerTitleEl.innerText = title;
         leaf.tabHeaderInnerTitleEl.classList.add('tab__title');
+    }
+
+    getTruncatedPath(parts: string[]): string {
+        const depth = Number.isFinite(this.settings.depth) ? this.settings.depth : 0;
+        if (depth <= 0) {
+            return parts.join('/');
+        }
+
+        const sliceStart = Math.max(parts.length - (depth + 1), 0);
+        return parts.slice(sliceStart).join('/');
+    }
+
+    matchesAlwaysShowGlobs(fileName: string): boolean {
+        if (!fileName) {
+            return false;
+        }
+
+        return this.settings.alwaysShowGlobs.some(pattern => {
+            const trimmed = pattern.trim();
+            return trimmed.length > 0 && this.globMatches(fileName, trimmed);
+        });
+    }
+
+    globMatches(input: string, pattern: string): boolean {
+        // Supports "*" (any chars) and "?" (single char) for filename-only globs.
+        const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+        const regexSource = '^' +
+            escaped
+                .replace(/\*/g, '.*')
+                .replace(/\?/g, '.') +
+            '$';
+        return new RegExp(regexSource).test(input);
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+}
+
+class TabFilePathSettingTab extends PluginSettingTab {
+    plugin: TabFilePathPlugin;
+
+    constructor(app: App, plugin: TabFilePathPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display(): void {
+        const { containerEl } = this;
+        containerEl.empty();
+
+        new Setting(containerEl)
+            .setName('Path depth')
+            .setDesc('Number of parent folders to show with the filename. Use 0 for full path.')
+            .addText((text) =>
+                text
+                    .setPlaceholder('1')
+                    .setValue(String(this.plugin.settings.depth))
+                    .onChange(async (value) => {
+                        const parsed = Number.parseInt(value, 10);
+                        this.plugin.settings.depth = Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
+                        await this.plugin.saveSettings();
+                        this.plugin.setTabTitles();
+                    })
+            );
+
+        new Setting(containerEl)
+            .setName('Always show path (filename globs)')
+            .setDesc('One glob per line. Supports "*" and "?". Matches filenames without extensions.')
+            .addTextArea((text) =>
+                text
+                    .setPlaceholder('daily-*\nmeeting-*')
+                    .setValue(this.plugin.settings.alwaysShowGlobs.join('\n'))
+                    .onChange(async (value) => {
+                        this.plugin.settings.alwaysShowGlobs = value
+                            .split(/\r?\n/)
+                            .map((line) => line.trim())
+                            .filter((line) => line.length > 0);
+                        await this.plugin.saveSettings();
+                        this.plugin.setTabTitles();
+                    })
+            );
     }
 }
