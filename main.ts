@@ -9,12 +9,10 @@ import {
 
 interface TabFilePathSettings {
     depth: number;
-    alwaysShowGlobs: string[];
 }
 
 const DEFAULT_SETTINGS: TabFilePathSettings = {
     depth: 1,
-    alwaysShowGlobs: [],
 };
 
 export default class TabFilePathPlugin extends Plugin {
@@ -73,22 +71,8 @@ export default class TabFilePathPlugin extends Plugin {
             return { leaf, path, parts, fileName };
         });
 
-        const fileNameCounts: Record<string, number> = {};
-        for (const info of leafInfos) {
-            const name = info.fileName;
-            fileNameCounts[name] = (fileNameCounts[name] ?? 0) + 1;
-        }
-
         leafInfos.forEach((info) => {
-            const shouldShowPath =
-                fileNameCounts[info.fileName] > 1 ||
-                this.matchesAlwaysShowGlobs(info.fileName);
-
-            const title = shouldShowPath
-                ? this.getTruncatedPath(info.parts)
-                : info.fileName;
-
-            this.setLeafTitle(info.leaf, title);
+            this.setLeafTitle(info.leaf, this.getTruncatedPath(info.parts));
         });
     }
 
@@ -126,28 +110,6 @@ export default class TabFilePathPlugin extends Plugin {
         return parts.slice(sliceStart).join('/');
     }
 
-    matchesAlwaysShowGlobs(fileName: string): boolean {
-        if (!fileName) {
-            return false;
-        }
-
-        return this.settings.alwaysShowGlobs.some(pattern => {
-            const trimmed = pattern.trim();
-            return trimmed.length > 0 && this.globMatches(fileName, trimmed);
-        });
-    }
-
-    globMatches(input: string, pattern: string): boolean {
-        // Supports "*" (any chars) and "?" (single char) for filename-only globs.
-        const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-        const regexSource = '^' +
-            escaped
-                .replace(/\*/g, '.*')
-                .replace(/\?/g, '.') +
-            '$';
-        return new RegExp(regexSource).test(input);
-    }
-
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     }
@@ -179,23 +141,6 @@ class TabFilePathSettingTab extends PluginSettingTab {
                     .onChange(async (value) => {
                         const parsed = Number.parseInt(value, 10);
                         this.plugin.settings.depth = Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
-                        await this.plugin.saveSettings();
-                        this.plugin.setTabTitles();
-                    })
-            );
-
-        new Setting(containerEl)
-            .setName('Always show path (filename globs)')
-            .setDesc('One glob per line. Supports "*" and "?". Matches filenames without extensions.')
-            .addTextArea((text) =>
-                text
-                    .setPlaceholder('daily-*\nmeeting-*')
-                    .setValue(this.plugin.settings.alwaysShowGlobs.join('\n'))
-                    .onChange(async (value) => {
-                        this.plugin.settings.alwaysShowGlobs = value
-                            .split(/\r?\n/)
-                            .map((line) => line.trim())
-                            .filter((line) => line.length > 0);
                         await this.plugin.saveSettings();
                         this.plugin.setTabTitles();
                     })
